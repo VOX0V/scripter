@@ -1,0 +1,9 @@
+# Install as root on each target VM, after copying deploy/scripter-run to
+# /usr/local/sbin/scripter-run and making it root-owned (root:root, 0755).
+# Replace "scripter" with the dedicated SSH account used by Scripter.
+#
+# NOPASSWD is intentional: Scripter cannot answer an interactive sudo password
+# prompt safely. The account/key should be dedicated to Scripter and should not
+# be reused for normal administration.
+
+scripter ALL=(root) NOPASSWD: /usr/local/sbin/scripter-run

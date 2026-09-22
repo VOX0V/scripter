@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Admin — scripter{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Utilisateurs</h2>
+    <table>
+        <tr><th>Utilisateur</th><th>Admin</th><th>Créé le</th><th></th></tr>
+        {% for u in users %}
+        <tr>
+            <td>{{ u.username }}</td>
+            <td>{{ 'Oui' if u.is_admin else 'Non' }}</td>
+            <td>{{ u.created_at.strftime('%Y-%m-%d') }}</td>
+            <td style="white-space:nowrap;">
+                <form method="POST" action="{{ url_for('admin.revoke_sessions', user_id=u.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="secondary">Révoquer sessions</button>
+                </form>
+                {% if u.id != current_user.id %}
+                <form method="POST" action="{{ url_for('admin.delete_user', user_id=u.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="danger">Supprimer</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h3 style="margin-top:20px;">Ajouter un utilisateur</h3>
+    <form method="POST" action="{{ url_for('admin.add_user') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="username">Utilisateur</label>
+        <input type="text" id="username" name="username" required>
+        <label for="password">Mot de passe</label>
+        <input type="password" id="password" name="password" required>
+        <label style="margin-top:10px;">
+            <input type="checkbox" name="is_admin" style="width:auto;"> Compte administrateur
+        </label>
+        <button type="submit" style="margin-top:14px;">Ajouter</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>IP bannies</h2>
+    <table>
+        <tr><th>IP</th><th>Échecs</th><th>Banni jusqu'à</th><th></th></tr>
+        {% for b in banned_ips %}
+        <tr>
+            <td>{{ b.ip_address }}</td>
+            <td>{{ b.fail_count }}</td>
+            <td>{{ b.banned_until.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('admin.unban', ban_id=b.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="secondary">Débannir</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not banned_ips %}
+        <tr><td colspan="4" class="empty">Aucune IP bannie actuellement.</td></tr>
+        {% endif %}
+    </table>
+</div>
+
+<div class="card">
+    <h2>Tentatives de connexion</h2>
+    <table>
+        <tr><th>Date</th><th>IP</th><th>Utilisateur tenté</th><th>Résultat</th></tr>
+        {% for a in recent_attempts %}
+        <tr>
+            <td>{{ a.attempted_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td>{{ a.ip_address }}</td>
+            <td>{{ a.username_tried }}</td>
+            <td>
+                <span class="badge {{ 'success' if a.success else 'error' }}">
+                    {{ 'Réussie' if a.success else 'Échouée' }}
+                </span>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not recent_attempts %}
+        <tr><td colspan="4" class="empty">Aucune tentative enregistrée.</td></tr>
+        {% endif %}
+    </table>
+</div>
+
+{% endblock %}

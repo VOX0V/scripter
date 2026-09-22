@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Connexion — scripter{% endblock %}
+{% block content %}
+<div style="max-width: 360px; margin: 60px auto 0;">
+    <div class="card">
+        <h2 style="text-align:center;">scripter</h2>
+        <form method="POST" action="{{ url_for('auth.login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label for="username">Utilisateur</label>
+            <input type="text" id="username" name="username" required autofocus>
+            <label for="password">Mot de passe</label>
+            <input type="password" id="password" name="password" required>
+            <button type="submit" style="width:100%; margin-top:16px;">Connexion</button>
+        </form>
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

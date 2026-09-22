@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Terminal — scripter{% endblock %}
+{% block content %}
+
+<a href="{{ url_for('main.dashboard') }}">&larr; Retour au dashboard</a>
+
+<div style="margin-top:16px;">
+{% for e in executions %}
+<div class="card">
+    <h3>
+        {{ labels.get(e.server_id, e.server_host) }} ({{ e.server_host }}) — {{ e.category }} / {{ e.script_name }}
+        <span class="badge running" id="status-{{ e.id }}" data-status="running">En cours</span>
+    </h3>
+    <pre class="log" id="output-{{ e.id }}" style="height:280px; overflow-y:auto;"></pre>
+    <form class="terminal-input-form" data-execution-id="{{ e.id }}" style="display:flex; gap:8px; margin-top:8px;">
+        <input type="text" id="input-{{ e.id }}" autocomplete="off"
+               placeholder="Répondre si une confirmation est demandée (ex: y, o, mot de passe...)">
+        <button type="submit">Envoyer</button>
+    </form>
+</div>
+{% endfor %}
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+(function () {
+    var executionIds = [{% for e in executions %}{{ e.id }}{% if not loop.last %},{% endif %}{% endfor %}];
+    var csrfToken = {{ csrf_token()|tojson }};
+    var socket = io();
+
+    socket.on("connect", function () {
+        executionIds.forEach(function (id) {
+            socket.emit("join", { execution_id: id, csrf: csrfToken });
+        });
+    });
+
+    socket.on("output", function (msg) {
+        var el = document.getElementById("output-" + msg.id);
+        if (el) {
+            el.textContent += msg.data;
+            el.scrollTop = el.scrollHeight;
+        }
+    });
+
+    socket.on("status", function (msg) {
+        var badge = document.getElementById("status-" + msg.id);
+        if (badge) {
+            var label = "En cours";
+            if (msg.status === "success") { label = "Terminé"; }
+            else if (msg.status === "error") { label = "Erreur"; }
+            badge.textContent = label;
+            badge.className = "badge " + msg.status;
+        }
+    });
+
+    document.querySelectorAll(".terminal-input-form").forEach(function (form) {
+        form.addEventListener("submit", function (evt) {
+            evt.preventDefault();
+            var id = parseInt(form.getAttribute("data-execution-id"), 10);
+            var input = document.getElementById("input-" + id);
+            socket.emit("terminal_input", { execution_id: id, text: input.value + "\n", csrf: csrfToken });
+            input.value = "";
+        });
+    });
+})();
+</script>
+
+{% endblock %}

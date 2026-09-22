@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+instance/
+*.db
+*.sqlite
+*.log
+data/logs/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+keys/*
+!keys/.gitkeep

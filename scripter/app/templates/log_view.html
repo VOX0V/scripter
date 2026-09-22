@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Log — {{ execution.script_name }}{% endblock %}
+{% block content %}
+
+<a href="{{ url_for('main.dashboard') }}">&larr; Retour au dashboard</a>
+
+<div class="card" style="margin-top:16px;">
+    <h2>{{ execution.category }} / {{ execution.script_name }}</h2>
+    <p style="color:var(--text-dim); font-size:14px;">
+        Serveur : {{ execution.server_host }} —
+        Par : {{ execution.triggered_by }} —
+        Démarré : {{ execution.started_at.strftime('%Y-%m-%d %H:%M:%S') }}
+        {% if execution.finished_at %} — Terminé : {{ execution.finished_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}
+    </p>
+    <span class="badge {{ execution.status }}">
+        {% if execution.status == 'running' %}En cours — recharge la page pour voir la suite{% elif execution.status == 'success' %}Terminé avec succès{% else %}Terminé avec erreur{% endif %}
+    </span>
+    <pre class="log" style="margin-top:14px;">{{ content }}</pre>
+</div>
+
+{% endblock %}

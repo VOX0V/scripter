@@ -1,0 +1,20 @@
+services:
+  scripter:
+    image: ${SCRIPTER_IMAGE:?Set SCRIPTER_IMAGE in .env}
+    container_name: scripter
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${SCRIPTER_PORT:-8080}:8000"
+    volumes:
+      - ./scripter/instance:/usr/src/app/instance
+      - ./scripter/data:/usr/src/app/data
+      - ./scripter/keys:/run/scripter/keys:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp

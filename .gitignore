@@ -1,0 +1,33 @@
+# Secrets / local configuration
+.env
+*.secret
+*.secrets
+/run/secrets/
+scripter/keys/*
+!scripter/keys/.gitkeep
+
+# Runtime data
+scripter/instance/*
+!scripter/instance/.gitkeep
+scripter/data/*
+!scripter/data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
