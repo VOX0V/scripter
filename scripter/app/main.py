@@ -209,7 +209,21 @@ def terminal():
 
     servers = get_configured_servers()
     labels = {sid: srv["label"] for sid, srv in servers.items()}
-    return render_template("terminal.html", executions=executions, labels=labels)
+    initial_logs = {}
+    log_dir = Path(get_log_dir(current_app.config["DATA_DIR"]))
+    for execution in executions:
+        log_path = log_dir / execution.log_filename
+        try:
+            if log_path.name == execution.log_filename and log_path.is_file() and not log_path.is_symlink():
+                initial_logs[execution.id] = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            initial_logs[execution.id] = ""
+    return render_template(
+        "terminal.html",
+        executions=executions,
+        labels=labels,
+        initial_logs=initial_logs,
+    )
 
 
 @main_bp.route("/log/<int:execution_id>")

@@ -18,7 +18,36 @@
         return;
     }
 
-    var socket = io();
+    function setStatus(id, status) {
+        var badge = document.getElementById("status-" + id);
+        if (!badge) {
+            return;
+        }
+        var label = "En cours";
+        if (status === "success") {
+            label = "Terminé";
+        } else if (status === "error") {
+            label = "Erreur";
+        } else if (status === "timeout") {
+            label = "Timeout";
+        }
+        badge.textContent = label;
+        badge.className = "badge " + status;
+        badge.setAttribute("data-status", status);
+    }
+
+    function appendOutput(id, data) {
+        var el = document.getElementById("output-" + id);
+        if (!el || typeof data !== "string") {
+            return;
+        }
+        el.textContent += data;
+        el.scrollTop = el.scrollHeight;
+    }
+
+    var socket = io({
+        transports: ["websocket", "polling"]
+    });
 
     socket.on("connect", function () {
         executionIds.forEach(function (id) {
@@ -27,26 +56,14 @@
     });
 
     socket.on("output", function (msg) {
-        var el = document.getElementById("output-" + msg.id);
-        if (el) {
-            el.textContent += msg.data;
-            el.scrollTop = el.scrollHeight;
+        if (msg && Number.isInteger(Number(msg.id))) {
+            appendOutput(Number(msg.id), msg.data);
         }
     });
 
     socket.on("status", function (msg) {
-        var badge = document.getElementById("status-" + msg.id);
-        if (badge) {
-            var label = "En cours";
-            if (msg.status === "success") {
-                label = "Terminé";
-            } else if (msg.status === "error") {
-                label = "Erreur";
-            } else if (msg.status === "timeout") {
-                label = "Timeout";
-            }
-            badge.textContent = label;
-            badge.className = "badge " + msg.status;
+        if (msg && Number.isInteger(Number(msg.id))) {
+            setStatus(Number(msg.id), msg.status);
         }
     });
 

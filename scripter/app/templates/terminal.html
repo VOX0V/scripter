@@ -10,9 +10,9 @@
     <div class="card">
         <h3>
             {{ labels.get(e.server_id, e.server_host) }} ({{ e.server_host }}) — {{ e.category }} / {{ e.script_name }}
-            <span class="badge running" id="status-{{ e.id }}" data-status="running">En cours</span>
+            <span class="badge {{ e.status }}" id="status-{{ e.id }}" data-status="{{ e.status }}">{{ "En cours" if e.status == "running" else ("Terminé" if e.status == "success" else ("Timeout" if e.status == "timeout" else "Erreur")) }}</span>
         </h3>
-        <pre class="log" id="output-{{ e.id }}" style="height:280px; overflow-y:auto;"></pre>
+        <pre class="log" id="output-{{ e.id }}" style="height:280px; overflow-y:auto;">{{ initial_logs.get(e.id, "") }}</pre>
         <form class="terminal-input-form" data-execution-id="{{ e.id }}" style="display:flex; gap:8px; margin-top:8px;">
             <input type="text" id="input-{{ e.id }}" autocomplete="off"
                    placeholder="Répondre si une confirmation est demandée (ex: y, o, mot de passe...)">

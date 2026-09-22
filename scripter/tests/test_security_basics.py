@@ -97,5 +97,13 @@ def test_terminal_javascript_is_external_and_carries_csrf_via_data_attribute():
     assert 'socket.emit("join"' in js_text
     assert 'socket.emit("terminal_input"' in js_text
 
-def test_version_is_0_3_7():
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.3.7"
+def test_version_is_0_3_8():
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.3.8"
+
+
+def test_terminal_replays_existing_log_and_status():
+    terminal = (ROOT / "app" / "templates" / "terminal.html").read_text()
+    main = (ROOT / "app" / "main.py").read_text()
+    assert 'initial_logs.get(e.id, "")' in terminal
+    assert 'e.status == "running"' in terminal
+    assert 'initial_logs = {}' in main
