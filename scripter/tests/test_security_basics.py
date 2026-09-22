@@ -61,3 +61,17 @@ def test_compose_persists_instance_on_host_data_and_scripts_on_data_dir():
     assert "./scripts:/usr/src/app/data" in text
     assert "./scripter/instance:/usr/src/app/instance" not in text
     assert 'DATA_DIR: /usr/src/app/data' in text
+
+def test_admin_password_has_no_minimum_length_restriction():
+    text = (ROOT / "app" / "admin.py").read_text()
+    assert "len(password) < 12" not in text
+    assert "entre 12 et 1024" not in text
+    assert "len(password) > 1024" in text
+
+
+def test_initial_admin_defaults_are_not_length_restricted():
+    text = (ROOT / "app" / "__init__.py").read_text()
+    assert 'os.environ.get("DEFAULT_ADMIN_PASS", "admin")' in text
+    assert "12 caractères" not in text
+    assert "len(default_pass)" not in text
+

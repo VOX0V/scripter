@@ -51,8 +51,8 @@ def add_user():
         abort(400, "Nom d'utilisateur et mot de passe requis")
     if len(username) > 80 or not username.replace("_", "").replace("-", "").isalnum():
         abort(400, "Nom d'utilisateur invalide")
-    if len(password) < 12 or len(password) > 1024:
-        abort(400, "Le mot de passe doit contenir entre 12 et 1024 caractères")
+    if len(password) > 1024:
+        abort(400, "Le mot de passe ne peut pas dépasser 1024 caractères")
 
     if User.query.filter_by(username=username).first():
         abort(400, "Cet utilisateur existe déjà")
