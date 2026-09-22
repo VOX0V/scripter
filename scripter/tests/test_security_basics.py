@@ -84,3 +84,18 @@ def test_dashboard_javascript_is_external_and_version_is_copied_into_image():
     assert "dashboard.js" in dashboard
     assert "COPY VERSION ." in dockerfile
     assert (ROOT / "app" / "static" / "js" / "dashboard.js").exists()
+
+
+def test_terminal_javascript_is_external_and_carries_csrf_via_data_attribute():
+    terminal = (ROOT / "app" / "templates" / "terminal.html").read_text()
+    javascript = ROOT / "app" / "static" / "js" / "terminal.js"
+    assert "<script>" not in terminal
+    assert "js/terminal.js" in terminal
+    assert "data-csrf-token" in terminal
+    assert javascript.exists()
+    js_text = javascript.read_text()
+    assert 'socket.emit("join"' in js_text
+    assert 'socket.emit("terminal_input"' in js_text
+
+def test_version_is_0_3_7():
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.3.7"

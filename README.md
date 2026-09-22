@@ -100,7 +100,7 @@ secrets.
 
 ## Version
 
-`0.3.5`
+`0.3.7`
 
 
 Au premier démarrage d’une base vide, le compte administrateur par défaut est `admin` / `admin`. Les variables `DEFAULT_ADMIN_USER` et `DEFAULT_ADMIN_PASS` permettent de remplacer ces valeurs avant l’initialisation de la base.
