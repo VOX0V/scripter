@@ -53,3 +53,11 @@ def test_default_admin_credentials_are_admin_admin():
     text = (ROOT / "app" / "__init__.py").read_text()
     assert 'os.environ.get("DEFAULT_ADMIN_USER", "admin")' in text
     assert 'os.environ.get("DEFAULT_ADMIN_PASS", "admin")' in text
+
+
+def test_compose_persists_instance_on_host_data_and_scripts_on_data_dir():
+    text = (ROOT.parent / "docker-compose.yml").read_text()
+    assert "./data:/usr/src/app/instance" in text
+    assert "./scripts:/usr/src/app/data" in text
+    assert "./scripter/instance:/usr/src/app/instance" not in text
+    assert 'DATA_DIR: /usr/src/app/data' in text

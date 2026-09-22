@@ -63,6 +63,29 @@ docker compose up -d
 
 The host does not need Python or the project dependencies installed locally.
 
+The deployment directories are deliberately mapped as follows:
+
+```text
+./data    -> /usr/src/app/instance   # scripter.db + secret_key
+./scripts -> /usr/src/app/data       # user scripts + logs/
+./keys    -> /run/scripter/keys      # SSH keys, read-only
+```
+
+Before the first start, the container user (`1000:1000`) must be able to write
+to `data/` and `scripts/`. Prepare a fresh host with:
+
+```sh
+sudo mkdir -p data scripts keys
+sudo chown -R 1000:1000 data scripts
+sudo chmod 700 data keys
+sudo chmod 755 scripts
+```
+
+This mapping is intentional: `instance/` is no longer a separate host
+directory. The persistent host directory is `data/`, which is the directory
+used by the deployment compose file for the SQLite database and `secret_key`.
+
+
 ## Security model
 
 Scripter is an administrative automation tool, not a sandbox. A user who is
@@ -77,7 +100,7 @@ secrets.
 
 ## Version
 
-`0.3.3`
+`0.3.4`
 
 
 Au premier démarrage d’une base vide, le compte administrateur par défaut est `admin` / `admin`. Les variables `DEFAULT_ADMIN_USER` et `DEFAULT_ADMIN_PASS` permettent de remplacer ces valeurs avant l’initialisation de la base.
