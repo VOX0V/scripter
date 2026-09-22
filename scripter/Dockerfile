@@ -6,6 +6,7 @@ RUN groupadd -g 1000 scripter \
 WORKDIR /usr/src/app
 
 COPY requirements.txt .
+COPY VERSION .
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
 COPY app ./app

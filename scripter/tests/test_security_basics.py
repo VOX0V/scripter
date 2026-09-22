@@ -75,3 +75,12 @@ def test_initial_admin_defaults_are_not_length_restricted():
     assert "12 caractères" not in text
     assert "len(default_pass)" not in text
 
+
+
+def test_dashboard_javascript_is_external_and_version_is_copied_into_image():
+    dashboard = (ROOT / "app" / "templates" / "dashboard.html").read_text()
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert "<script>" not in dashboard
+    assert "dashboard.js" in dashboard
+    assert "COPY VERSION ." in dockerfile
+    assert (ROOT / "app" / "static" / "js" / "dashboard.js").exists()

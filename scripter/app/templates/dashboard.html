@@ -29,7 +29,7 @@
                 <p class="launch-col-title">{{ folder }}</p>
                 {% for script in scripts %}
                 <label class="script-option">
-                    <input type="radio" name="script" value="{{ folder }}::{{ script.name }}" class="script-radio">
+                    <input type="radio" name="script" value="{{ folder }}::{{ script.name }}" class="script-radio" data-content='{{ script.content|tojson }}'>
                     {{ script.name }}
                 </label>
                 {% endfor %}
@@ -55,40 +55,7 @@
     </form>
 </div>
 
-<script>
-(function () {
-    var scriptContents = {
-        {% for folder, scripts in structure.items() %}
-            {% for script in scripts %}
-            "{{ folder }}::{{ script.name }}": {{ script.content|tojson }},
-            {% endfor %}
-        {% endfor %}
-    };
-
-    var preview = document.getElementById("script-preview");
-    var recapScript = document.getElementById("recap-script");
-    var recapTargets = document.getElementById("recap-targets");
-
-    document.querySelectorAll(".script-radio").forEach(function (radio) {
-        radio.addEventListener("change", function () {
-            preview.textContent = scriptContents[radio.value] || "(contenu introuvable)";
-            recapScript.textContent = radio.value.split("::").join(" / ");
-        });
-    });
-
-    function updateTargets() {
-        var checked = Array.prototype.slice.call(document.querySelectorAll(".server-checkbox:checked"));
-        if (checked.length === 0) {
-            recapTargets.textContent = "aucune";
-        } else {
-            recapTargets.textContent = checked.map(function (c) { return c.getAttribute("data-label"); }).join(", ");
-        }
-    }
-    document.querySelectorAll(".server-checkbox").forEach(function (cb) {
-        cb.addEventListener("change", updateTargets);
-    });
-})();
-</script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 
 <div class="card">
     <h2>Serveurs</h2>
