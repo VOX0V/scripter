@@ -1,10 +1,13 @@
+import hashlib
 import os
 import socket
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy import text
 
 from app import db, socketio
 from app.models import Execution
@@ -36,9 +39,40 @@ def get_configured_servers() -> dict:
             "use_sudo": os.getenv(f"SSH_USE_SUDO_{i}", "0") == "1",
             "sudo_wrapper": os.getenv(f"SSH_SUDO_WRAPPER_{i}", "/usr/local/sbin/scripter-run"),
             "label": os.getenv(f"SSH_LABEL_{i}", host),
+            # v1.1: optional per-server allowlist (comma-separated usernames).
+            # None means "no explicit allowlist configured" (see _accessible_servers).
+            "allowed_users": (
+                frozenset(u.strip() for u in os.getenv(f"SSH_ALLOWED_USERS_{i}", "").split(",") if u.strip())
+                or None
+            ),
         }
         i += 1
     return servers
+
+
+def _accessible_servers(user, servers: dict) -> dict:
+    """v1.1: restrict which servers a non-admin user may see/target.
+
+    Admins can always target every configured server. SSH_USE_SUDO grants
+    root on the target host, so by default a server with SSH_USE_SUDO=1 is
+    admin-only unless SSH_ALLOWED_USERS_n explicitly opts specific accounts
+    in. A non-sudo server stays open to every authenticated user unless
+    SSH_ALLOWED_USERS_n is set for it, which preserves prior behaviour for
+    typical (non-sudo) deployments.
+    """
+    if user.is_admin:
+        return dict(servers)
+    accessible = {}
+    for server_id, srv in servers.items():
+        allowed = srv.get("allowed_users")
+        if allowed is not None:
+            if user.username in allowed:
+                accessible[server_id] = srv
+            continue
+        if srv.get("use_sudo"):
+            continue
+        accessible[server_id] = srv
+    return accessible
 
 
 def _safe_script_path(data_dir: str, folder: str, script_name: str) -> Path | None:
@@ -67,13 +101,21 @@ def get_scripts_structure(data_dir: str) -> dict:
     root = Path(data_dir)
     if not root.is_dir():
         return structure
+    limit_count = current_app.config["MAX_SCRIPT_COUNT"]
+    limit_bytes = current_app.config["MAX_SCRIPT_CONTENT_BYTES"]
     try:
         for folder_entry in sorted(root.iterdir(), key=lambda p: p.name):
+            # v1.1: check the global caps before opening the next folder at
+            # all, not just inside the per-file loop below — otherwise every
+            # remaining folder still gets scanned (iterdir + stat calls) even
+            # once nothing more will be listed.
+            if listed >= limit_count or total_bytes >= limit_bytes:
+                break
             if not folder_entry.is_dir() or folder_entry.is_symlink() or folder_entry.name == "logs":
                 continue
             scripts = []
             for file in sorted(folder_entry.iterdir(), key=lambda p: p.name):
-                if listed >= current_app.config["MAX_SCRIPT_COUNT"]:
+                if listed >= limit_count or total_bytes >= limit_bytes:
                     break
                 if file.is_symlink() or not file.is_file() or file.suffix != ".sh":
                     continue
@@ -82,7 +124,7 @@ def get_scripts_structure(data_dir: str) -> dict:
                         continue
                     content = file.read_text(encoding="utf-8", errors="ignore")
                     encoded_size = len(content.encode("utf-8", errors="ignore"))
-                    if total_bytes + encoded_size > current_app.config["MAX_SCRIPT_CONTENT_BYTES"]:
+                    if total_bytes + encoded_size > limit_bytes:
                         break
                 except OSError:
                     content = "(impossible de lire le contenu du script)"
@@ -103,6 +145,29 @@ def _check_server_online(srv: dict) -> bool:
         return False
 
 
+def _read_log_capped(path: Path, max_bytes: int) -> str:
+    """v1.2: read at most max_bytes from a log file, tailing it if larger.
+    Execution output going forward is already bounded (MAX_EXECUTION_OUTPUT_BYTES),
+    but this also protects viewing of older, pre-cap logs."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            if size <= max_bytes:
+                return f.read().decode("utf-8", errors="ignore")
+            f.seek(size - max_bytes)
+            data = f.read()
+            prefix = (
+                f"*** Log tronqué à l'affichage : {max_bytes} derniers octets "
+                f"sur {size} au total. ***\n\n"
+            ).encode("utf-8")
+            return (prefix + data).decode("utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
 def can_access_execution(execution: Execution) -> bool:
     return current_user.is_authenticated and (
         current_user.is_admin or execution.user_id == current_user.id
@@ -119,7 +184,7 @@ def _owned_executions_query():
 @login_required
 def dashboard():
     data_dir = current_app.config["DATA_DIR"]
-    servers = get_configured_servers()
+    servers = _accessible_servers(current_user, get_configured_servers())
     for srv in servers.values():
         srv["online"] = _check_server_online(srv)
 
@@ -155,41 +220,117 @@ def run_script():
         abort(400, "Script invalide")
 
     servers = get_configured_servers()
+    accessible_servers = _accessible_servers(current_user, servers)
     script_path = _safe_script_path(current_app.config["DATA_DIR"], folder, script_name)
     if script_path is None:
         abort(400, "Script introuvable ou invalide")
 
+    valid_server_ids = [sid for sid in dict.fromkeys(server_ids) if sid in accessible_servers]
+    if not valid_server_ids:
+        abort(400, "Aucun serveur valide sélectionné (ou accès non autorisé)")
+
+    # v1.2 (H2): read the script's bytes exactly once, here, and hash them.
+    # Every execution created below runs from its own private copy of these
+    # exact bytes (see snapshot_path), not by re-reading the source script
+    # file later — closing the window where the source file could be edited
+    # between this check and the moment ssh_runner actually uploads it.
+    try:
+        script_bytes = script_path.read_bytes()
+    except OSError:
+        abort(400, "Script illisible")
+    script_sha256 = hashlib.sha256(script_bytes).hexdigest()
+
+    per_user_limit = current_app.config["MAX_CONCURRENT_EXECUTIONS_PER_USER"]
+    global_limit = current_app.config["MAX_GLOBAL_CONCURRENT_EXECUTIONS"]
+    per_server_limit = current_app.config["MAX_CONCURRENT_EXECUTIONS_PER_SERVER"]
     log_dir = Path(get_log_dir(current_app.config["DATA_DIR"]))
-    app_obj = current_app._get_current_object()
-    created_ids = []
+    created = []  # list of (execution_id, srv, log_filename, snapshot_path)
 
-    for server_id in dict.fromkeys(server_ids):
-        if server_id not in servers:
-            continue
-        srv = servers[server_id]
-        execution = Execution(
-            user_id=current_user.id,
-            server_id=server_id,
-            server_host=srv["host"],
-            category=folder,
-            script_name=script_name,
-            status="running",
-            log_filename="pending",
-            triggered_by=current_user.username,
-        )
-        db.session.add(execution)
-        db.session.flush()
-        log_filename = f"execution_{execution.id}.log"
-        execution.log_filename = log_filename
+    # v1.1: reserve the quota atomically. "BEGIN IMMEDIATE" takes SQLite's
+    # write lock right away, so a concurrent /run (same user, or anyone else
+    # for the global/per-server caps) cannot interleave between the COUNTs
+    # below and the INSERTs that follow — closing the race a plain
+    # "count then insert" would have. Any earlier read in this request (e.g.
+    # Flask-Login loading current_user) may have opened an implicit
+    # transaction, so end it first.
+    db.session.commit()
+    db.session.execute(text("BEGIN IMMEDIATE"))
+    committed = False
+    try:
+        running_count = Execution.query.filter_by(user_id=current_user.id, status="running").count()
+        if running_count + len(valid_server_ids) > per_user_limit:
+            abort(
+                429,
+                f"Trop d'exécutions en cours ({running_count} en cours, "
+                f"{len(valid_server_ids)} demandées, limite {per_user_limit}). "
+                "Attends la fin d'une exécution ou réduis le nombre de cibles.",
+            )
+
+        global_running_count = Execution.query.filter_by(status="running").count()
+        if global_running_count + len(valid_server_ids) > global_limit:
+            abort(
+                429,
+                f"Trop d'exécutions en cours sur l'instance ({global_running_count}/{global_limit}). "
+                "Réessaie plus tard ou augmente MAX_GLOBAL_CONCURRENT_EXECUTIONS.",
+            )
+
+        # v1.2 (M7): a per-user (or global) cap alone still lets several
+        # accounts pile onto the very same target host at once.
+        requested_per_server = Counter(valid_server_ids)
+        for server_id, requested in requested_per_server.items():
+            server_running = Execution.query.filter_by(server_id=server_id, status="running").count()
+            if server_running + requested > per_server_limit:
+                label = accessible_servers[server_id]["label"]
+                abort(
+                    429,
+                    f"Trop d'exécutions en cours sur {label} ({server_running}/{per_server_limit}). "
+                    "Réessaie plus tard ou augmente MAX_CONCURRENT_EXECUTIONS_PER_SERVER.",
+                )
+
+        for server_id in valid_server_ids:
+            srv = accessible_servers[server_id]
+            execution = Execution(
+                user_id=current_user.id,
+                server_id=server_id,
+                server_host=srv["host"],
+                category=folder,
+                script_name=script_name,
+                status="running",
+                log_filename="pending",
+                triggered_by=current_user.username,
+                script_sha256=script_sha256,
+            )
+            db.session.add(execution)
+            db.session.flush()
+            log_filename = f"execution_{execution.id}.log"
+            execution.log_filename = log_filename
+            # v1.2 (H2): private per-execution snapshot, stored alongside logs
+            # (already excluded from the script browser). Deleted by
+            # ssh_runner once this execution finishes.
+            snapshot_path = log_dir / f"execution_{execution.id}.sh.snapshot"
+            try:
+                snapshot_path.write_bytes(script_bytes)
+                os.chmod(snapshot_path, 0o600)
+            except OSError:
+                abort(500, "Impossible d'enregistrer une copie du script à exécuter")
+            created.append((execution.id, srv, log_filename, str(snapshot_path)))
         db.session.commit()
-        created_ids.append(execution.id)
+        committed = True
+    finally:
+        if not committed:
+            db.session.rollback()
+
+    if not created:
+        abort(400, "Aucun serveur valide sélectionné")
+
+    app_obj = current_app._get_current_object()
+    for execution_id, srv, log_filename, snapshot_path in created:
         start_interactive_session(
-            app_obj, socketio, execution.id, srv, str(script_path), str(log_dir / log_filename)
+            app_obj, socketio, execution_id, srv, snapshot_path, str(log_dir / log_filename),
+            script_sha256=script_sha256,
         )
 
-    if not created_ids:
-        abort(400, "Aucun serveur valide sélectionné")
-    return redirect(url_for("main.terminal", ids=",".join(map(str, created_ids))))
+    return redirect(url_for("main.terminal", ids=",".join(str(eid) for eid, _, _, _ in created)))
 
 
 @main_bp.route("/terminal")
@@ -215,7 +356,7 @@ def terminal():
         log_path = log_dir / execution.log_filename
         try:
             if log_path.name == execution.log_filename and log_path.is_file() and not log_path.is_symlink():
-                initial_logs[execution.id] = log_path.read_text(encoding="utf-8", errors="ignore")
+                initial_logs[execution.id] = _read_log_capped(log_path, current_app.config["MAX_LOG_READ_BYTES"])
         except OSError:
             initial_logs[execution.id] = ""
     return render_template(
@@ -239,7 +380,7 @@ def view_log(execution_id):
     content = ""
     try:
         if log_path.is_file() and not log_path.is_symlink():
-            content = log_path.read_text(encoding="utf-8", errors="ignore")
+            content = _read_log_capped(log_path, current_app.config["MAX_LOG_READ_BYTES"])
     except OSError:
         content = ""
     return render_template("log_view.html", execution=execution, content=content)

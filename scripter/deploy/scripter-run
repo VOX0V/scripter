@@ -3,8 +3,24 @@
 # Install this file as root and make it non-writable by the SSH user.
 set -eu
 
+# v1.2: privileged kill primitive. Scripter calls this after a timeout or an
+# output-limit overflow so it can terminate a script it launched in sudo
+# mode too: a plain (non-privileged) pkill from the SSH account cannot touch
+# a root-owned child, but this wrapper runs as root. Falling back to the
+# ordinary pkill remains best-effort as before if this mode isn't present
+# (e.g. an older wrapper not yet redeployed) — see SECURITY.md.
+if [ "$#" -eq 2 ] && [ "$1" = "--kill" ]; then
+    path=$2
+    case "$path" in
+        /tmp/scripter-????????????????????????????????.sh) ;;
+        *) echo "refusing unexpected script path" >&2; exit 64 ;;
+    esac
+    exec pkill -9 -f -- "$path"
+fi
+
 if [ "$#" -ne 1 ]; then
     echo "usage: scripter-run /tmp/scripter-<uuid>.sh" >&2
+    echo "       scripter-run --kill /tmp/scripter-<uuid>.sh" >&2
     exit 64
 fi
 

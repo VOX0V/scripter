@@ -9,15 +9,48 @@ LOG_DIR_NAME = "logs"
 active_channels = {}
 
 
+class _OutputLimitExceeded(Exception):
+    """Raised when an execution's output exceeds MAX_EXECUTION_OUTPUT_BYTES."""
+
+
+def _best_effort_kill_remote(ssh: paramiko.SSHClient, remote_path: str, srv: dict) -> None:
+    """Best-effort attempt to terminate the remote process after a forced stop
+    (timeout or output overflow).
+
+    v1.2: in sudo mode, first try the privileged kill via the scripter-run
+    wrapper (`--kill`, run as root through the same sudoers rule already
+    used to launch scripts) — this can terminate a root-owned child that a
+    plain, non-privileged pkill cannot touch. Falls back cleanly if the
+    target's wrapper predates v1.2's --kill mode (still best-effort in that
+    case). The plain pkill is always attempted too as a second sweep, since
+    it's what actually works in non-sudo mode.
+    """
+    commands = []
+    if srv.get("use_sudo") and srv.get("sudo_wrapper"):
+        commands.append(
+            f"sudo -n -- {shlex.quote(srv['sudo_wrapper'])} --kill {shlex.quote(remote_path)}"
+        )
+    commands.append(f"pkill -9 -f -- {shlex.quote(remote_path)}")
+    for cmd in commands:
+        try:
+            chan = ssh.get_transport().open_session()
+            chan.settimeout(5)
+            chan.exec_command(cmd)
+            chan.recv_exit_status()
+            chan.close()
+        except Exception:
+            continue
+
+
 def get_log_dir(data_dir: str) -> str:
     log_dir = os.path.join(data_dir, LOG_DIR_NAME)
     os.makedirs(log_dir, exist_ok=True)
     return log_dir
 
 
-def start_interactive_session(app, socketio, execution_id, srv, script_path, log_path):
+def start_interactive_session(app, socketio, execution_id, srv, script_path, log_path, script_sha256=None):
     socketio.start_background_task(
-        _run_interactive, app, socketio, execution_id, srv, script_path, log_path
+        _run_interactive, app, socketio, execution_id, srv, script_path, log_path, script_sha256
     )
 
 
@@ -39,7 +72,7 @@ def _known_hosts(ssh):
     ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
 
 
-def _run_interactive(app, socketio, execution_id, srv, script_path, log_path):
+def _run_interactive(app, socketio, execution_id, srv, script_path, log_path, script_sha256=None):
     from app import db
     from app.models import Execution
 
@@ -57,8 +90,11 @@ def _run_interactive(app, socketio, execution_id, srv, script_path, log_path):
         with open(log_path, "w", encoding="utf-8") as log_file:
             header = (
                 f"=== Exécution démarrée le {datetime.now().isoformat()} ===\n"
-                f"Cible : {srv['host']}:{srv['port']}\n\n"
+                f"Cible : {srv['host']}:{srv['port']}\n"
             )
+            if script_sha256:
+                header += f"Script (SHA-256) : {script_sha256}\n"
+            header += "\n"
             log_file.write(header)
             log_file.flush()
             emit_output(header)
@@ -112,16 +148,25 @@ def _run_interactive(app, socketio, execution_id, srv, script_path, log_path):
 
             started = datetime.now().timestamp()
             timeout = app.config["EXECUTION_TIMEOUT"]
+            max_output_bytes = app.config["MAX_EXECUTION_OUTPUT_BYTES"]
+            total_output_bytes = 0
             while True:
-                try:
-                    if chan.recv_ready():
+                if chan.recv_ready():
+                    try:
                         raw = chan.recv(4096).decode("utf-8", errors="ignore")
+                    except Exception:
+                        raw = ""
+                    if raw:
                         safe = raw.replace(srv.get("pass") or "\x00", "••••••••").replace(srv.get("key_passphrase") or "\x00", "••••••••")
                         log_file.write(safe)
                         log_file.flush()
                         emit_output(safe)
-                except Exception:
-                    pass
+                        total_output_bytes += len(safe.encode("utf-8", errors="ignore"))
+                        if total_output_bytes > max_output_bytes:
+                            raise _OutputLimitExceeded(
+                                f"Sortie tronquée après {total_output_bytes} octets "
+                                f"(limite {max_output_bytes})"
+                            )
 
                 if chan.exit_status_ready() and not chan.recv_ready():
                     break
@@ -137,14 +182,22 @@ def _run_interactive(app, socketio, execution_id, srv, script_path, log_path):
             emit_output(footer)
 
     except Exception as exc:
+        forced_stop = isinstance(exc, (TimeoutError, _OutputLimitExceeded))
         status = "timeout" if isinstance(exc, TimeoutError) else "error"
-        err = f"\n*** Erreur : {exc} ***\n"
+        if isinstance(exc, _OutputLimitExceeded):
+            err = f"\n*** {exc} — exécution interrompue ***\n"
+        else:
+            err = f"\n*** Erreur : {exc} ***\n"
         try:
             with open(log_path, "a", encoding="utf-8") as log_file:
                 log_file.write(err)
         except OSError:
             pass
         emit_output(err)
+        # Best effort: try to stop the remote process on a forced stop (timeout
+        # or output overflow) rather than leaving it running unattended.
+        if forced_stop and chan is not None and remote_path:
+            _best_effort_kill_remote(ssh, remote_path, srv)
     finally:
         active_channels.pop(execution_id, None)
         if chan is not None:
@@ -158,6 +211,12 @@ def _run_interactive(app, socketio, execution_id, srv, script_path, log_path):
             except Exception:
                 pass
         ssh.close()
+        # v1.2 (H2): remove the private local snapshot created for this
+        # execution now that it's no longer needed.
+        try:
+            os.remove(script_path)
+        except OSError:
+            pass
 
         with app.app_context():
             execution = db.session.get(Execution, execution_id)

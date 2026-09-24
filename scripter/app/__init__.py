@@ -48,8 +48,54 @@ def create_app():
     app.config["MAX_TERMINAL_INPUT"] = int(os.environ.get("MAX_TERMINAL_INPUT", 4096))
     app.config["EXECUTION_TIMEOUT"] = int(os.environ.get("EXECUTION_TIMEOUT", 3600))
     app.config["SSH_CONNECT_TIMEOUT"] = int(os.environ.get("SSH_CONNECT_TIMEOUT", 10))
+    # v1.0 hardening: cap concurrent executions per user and total output bytes
+    # per execution, to limit abuse/DoS potential of an authenticated but
+    # low-privilege account (see SECURITY.md).
+    app.config["MAX_CONCURRENT_EXECUTIONS_PER_USER"] = int(
+        os.environ.get("MAX_CONCURRENT_EXECUTIONS_PER_USER", 3)
+    )
+    app.config["MAX_EXECUTION_OUTPUT_BYTES"] = int(
+        os.environ.get("MAX_EXECUTION_OUTPUT_BYTES", 2 * 1024 * 1024)
+    )
+    # v1.1 hardening: instance-wide concurrency cap, in addition to the
+    # per-user one above (a per-user cap alone still lets N accounts add up
+    # to an unbounded total load on target hosts).
+    app.config["MAX_GLOBAL_CONCURRENT_EXECUTIONS"] = int(
+        os.environ.get("MAX_GLOBAL_CONCURRENT_EXECUTIONS", 20)
+    )
+    # v1.2 hardening.
+    app.config["MAX_CONCURRENT_EXECUTIONS_PER_SERVER"] = int(
+        os.environ.get("MAX_CONCURRENT_EXECUTIONS_PER_SERVER", 2)
+    )
+    # Cap how many bytes of a log file /terminal and /log/<id> will read into
+    # memory/response at once. Execution output itself is already capped
+    # going forward (MAX_EXECUTION_OUTPUT_BYTES above); this additionally
+    # protects viewing of older, pre-cap logs.
+    app.config["MAX_LOG_READ_BYTES"] = int(
+        os.environ.get("MAX_LOG_READ_BYTES", 5 * 1024 * 1024)
+    )
+    app.config["LOGIN_ATTEMPT_LOG_RETENTION_DAYS"] = int(
+        os.environ.get("LOGIN_ATTEMPT_LOG_RETENTION_DAYS", 30)
+    )
 
     db.init_app(app)
+
+    socket_origin = os.environ.get("SOCKETIO_ORIGIN")
+
+    def _ws_equivalent(origin: str) -> str | None:
+        # Translate an http(s) origin into its ws(s) equivalent for CSP
+        # connect-src, so we never need a broad "ws: wss:" scheme wildcard.
+        if origin.startswith("https://"):
+            return "wss://" + origin[len("https://"):]
+        if origin.startswith("http://"):
+            return "ws://" + origin[len("http://"):]
+        return None
+
+    connect_src = "'self'"
+    if socket_origin:
+        ws_origin = _ws_equivalent(socket_origin)
+        if ws_origin:
+            connect_src += f" {ws_origin}"
 
     @app.after_request
     def add_security_headers(response):
@@ -59,8 +105,8 @@ def create_app():
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; "
-            "style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
+            "default-src 'self'; script-src 'self'; "
+            f"style-src 'self' 'unsafe-inline'; connect-src {connect_src}; "
             "img-src 'self' data:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
         )
         if request.is_secure:
@@ -70,7 +116,6 @@ def create_app():
     login_manager.init_app(app)
     csrf.init_app(app)
 
-    socket_origin = os.environ.get("SOCKETIO_ORIGIN")
     # Empty list disables cross-origin Socket.IO requests. Set an explicit origin
     # only when the reverse proxy/browser deployment genuinely requires one.
     socketio.init_app(app, cors_allowed_origins=socket_origin if socket_origin else [])
@@ -106,7 +151,10 @@ def create_app():
     with app.app_context():
         db.create_all()
         _migrate_execution_ownership()
+        _migrate_script_hash_column()
         _ensure_initial_admin()
+        _reap_orphaned_executions(app)
+        _purge_old_login_attempt_logs(app)
 
     return app
 
@@ -129,6 +177,75 @@ def _migrate_execution_ownership():
         SET user_id = (SELECT id FROM users WHERE users.username = executions.triggered_by)
         WHERE user_id IS NULL
     """))
+    db.session.commit()
+
+
+def _reap_orphaned_executions(app):
+    """v1.1 watchdog: an Execution row is written as "running" as soon as
+    it's created, before the background SSH task is actually confirmed to
+    have started (see app/main.py:run_script). If the process crashes,
+    is killed, or is restarted while executions are in flight, those rows
+    are left "running" forever — silently consuming the owner's concurrency
+    quota and showing a misleading status. There is no way to know the
+    execution's real remote outcome after a restart, so mark it as failed
+    and note why, rather than leaving it stuck.
+    """
+    from app.models import Execution
+    from app.ssh_runner import get_log_dir
+    from datetime import datetime
+
+    orphans = Execution.query.filter_by(status="running").all()
+    if not orphans:
+        return
+    log_dir = Path(get_log_dir(app.config["DATA_DIR"]))
+    note = (
+        "\n*** Marquée en erreur au démarrage de Scripter : le processus a "
+        "redémarré ou a été interrompu pendant que cette exécution était en "
+        "cours. Son état réel sur la machine cible est inconnu. ***\n"
+    )
+    for execution in orphans:
+        execution.status = "error"
+        execution.finished_at = datetime.now()
+        try:
+            log_path = log_dir / execution.log_filename
+            if log_path.name == execution.log_filename:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(note)
+        except OSError:
+            pass
+        # v1.2: a snapshot (see main.py run_script / H2) is only ever cleaned
+        # up by ssh_runner once its execution finishes normally; a crash
+        # before that leaves it behind, so sweep it here too.
+        try:
+            (log_dir / f"execution_{execution.id}.sh.snapshot").unlink(missing_ok=True)
+        except OSError:
+            pass
+    db.session.commit()
+
+
+def _migrate_script_hash_column():
+    """v1.2 migration: add Execution.script_sha256 for installations upgrading
+    from an earlier version."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    if "executions" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("executions")}
+    if "script_sha256" not in columns:
+        db.session.execute(text("ALTER TABLE executions ADD COLUMN script_sha256 VARCHAR(64)"))
+        db.session.commit()
+
+
+def _purge_old_login_attempt_logs(app):
+    """v1.2: LoginAttemptLog previously grew forever. Keep only the last
+    LOGIN_ATTEMPT_LOG_RETENTION_DAYS days at each startup."""
+    from datetime import datetime, timedelta
+
+    from app.models import LoginAttemptLog
+
+    cutoff = datetime.now() - timedelta(days=app.config["LOGIN_ATTEMPT_LOG_RETENTION_DAYS"])
+    LoginAttemptLog.query.filter(LoginAttemptLog.attempted_at < cutoff).delete()
     db.session.commit()
 
 

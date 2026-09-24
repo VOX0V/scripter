@@ -8,12 +8,21 @@ from app.models import Execution
 from app.ssh_runner import send_input
 
 
+def _session_still_valid() -> bool:
+    # v1.0 hardening: an admin clicking "Révoquer sessions" bumps
+    # session_version, but a WebSocket connection opened before that doesn't
+    # necessarily replay Flask's before_request hooks on every frame. Re-check
+    # explicitly here so an active terminal is cut off too, not just future
+    # HTTP page loads.
+    return current_user.is_authenticated and session.get("sv") == current_user.session_version
+
+
 def _authorized_execution(execution_id):
     try:
         execution_id = int(execution_id)
     except (TypeError, ValueError):
         return None
-    if execution_id <= 0 or not current_user.is_authenticated:
+    if execution_id <= 0 or not _session_still_valid():
         return None
     execution = Execution.query.get(execution_id)
     if not execution:
@@ -36,7 +45,7 @@ def _valid_csrf(data):
 
 @socketio.on("join")
 def handle_join(data):
-    if not current_user.is_authenticated or not _valid_csrf(data):
+    if not _session_still_valid() or not _valid_csrf(data):
         return
     execution = _authorized_execution(data.get("execution_id"))
     if execution:
@@ -45,7 +54,7 @@ def handle_join(data):
 
 @socketio.on("terminal_input")
 def handle_input(data):
-    if not current_user.is_authenticated or not _valid_csrf(data):
+    if not _session_still_valid() or not _valid_csrf(data):
         return
     execution = _authorized_execution(data.get("execution_id"))
     if not execution:

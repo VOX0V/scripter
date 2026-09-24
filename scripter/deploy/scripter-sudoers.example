@@ -5,5 +5,8 @@
 # NOPASSWD is intentional: Scripter cannot answer an interactive sudo password
 # prompt safely. The account/key should be dedicated to Scripter and should not
 # be reused for normal administration.
+#
+# No argument restriction is used here, so this also covers scripter-run's
+# v1.2 "--kill <path>" mode (validated inside the wrapper itself).
 
 scripter ALL=(root) NOPASSWD: /usr/local/sbin/scripter-run

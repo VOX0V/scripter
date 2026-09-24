@@ -50,6 +50,26 @@ class LoginAttemptLog(db.Model):
     attempted_at = db.Column(db.DateTime, default=datetime.now)
 
 
+class AccountAttempt(db.Model):
+    """v1.2: per-account progressive lockout, complementing the existing
+    per-IP one. A distributed attacker rotating IPs was previously
+    unthrottled as long as they spread failed attempts across enough
+    addresses; this throttles by *username* instead, growing the delay with
+    repeated failures rather than an indefinite hard lock, so it can't itself
+    be used to permanently deny a legitimate user (see SECURITY.md)."""
+
+    __tablename__ = "account_attempts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    fail_count = db.Column(db.Integer, default=0, nullable=False)
+    last_attempt = db.Column(db.DateTime, default=datetime.now)
+    locked_until = db.Column(db.DateTime, nullable=True)
+
+    def is_locked(self) -> bool:
+        return bool(self.locked_until and self.locked_until > datetime.now())
+
+
 class Execution(db.Model):
     __tablename__ = "executions"
 
@@ -64,4 +84,9 @@ class Execution(db.Model):
     finished_at = db.Column(db.DateTime, nullable=True)
     log_filename = db.Column(db.String(255), nullable=False)
     triggered_by = db.Column(db.String(80), nullable=False)
+    # v1.2: SHA-256 of the exact script bytes that were actually uploaded and
+    # run for this execution, captured once at /run time (see main.py) — an
+    # audit trail independent of whatever the source script file looks like
+    # afterwards.
+    script_sha256 = db.Column(db.String(64), nullable=True)
     user = db.relationship("User", back_populates="executions")

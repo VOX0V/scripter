@@ -51,6 +51,12 @@ def add_user():
         abort(400, "Nom d'utilisateur et mot de passe requis")
     if len(username) > 80 or not username.replace("_", "").replace("-", "").isalnum():
         abort(400, "Nom d'utilisateur invalide")
+    # v1.2: a minimum only applies here, where an admin is choosing a password
+    # on someone else's behalf — that person never sees how weak it is before
+    # it's set for them. DEFAULT_ADMIN_PASS (your own initial credentials) is
+    # deliberately left unrestricted; see SECURITY.md.
+    if len(password) < 8:
+        abort(400, "Le mot de passe doit faire au moins 8 caractères")
     if len(password) > 1024:
         abort(400, "Le mot de passe ne peut pas dépasser 1024 caractères")
 

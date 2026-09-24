@@ -23,7 +23,7 @@
     </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="{{ url_for('static', filename='js/vendor/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/terminal.js') }}"></script>
 
 {% endblock %}
